@@ -136,7 +136,7 @@ public enum Dim {
 
 /// Matrix of Double values
 public class Matrix {
-    internal var flat = Vector()
+    public var flat = Vector()
     internal var _rows: Int = 0
     internal var _cols: Int = 0
     
@@ -274,15 +274,72 @@ extension Matrix {
         }
     }
     
-    /// Construct new matrix from source using specified extractor.
+    /// Construct new matrix from source using specified extractor or sets the part specified by the extractor equal to another matrix.
     ///
     /// Alternatively, `m[e]` can be executed with `m ?? e` or `slice(m, e)`
     ///
     /// - Parameters
     ///     - e: extractor tuple for rows and columns
     /// - Returns: extracted matrix
-    public subscript(_ e: (er: Extractor, ec: Extractor)) -> Matrix {
-        return slice(self, e)
+    public subscript(_ e: (Extractor, Extractor)) -> Matrix {
+        get {
+            return slice(self, e)
+        }
+        
+        set {
+            let pos = (er: e.0.convert(self.rows), ec: e.1.convert(self.cols))
+            switch pos {
+            case (.Pos(let pr), .Pos(let pc)):
+                if pr.count != newValue.rows || pc.count != newValue.cols {
+                    preconditionFailure("New Value does not have the same size as specified by the extractor!")
+                }
+                for (ri, rv) in pr.enumerated() {
+                    for (ci, cv) in pc.enumerated() {
+                        self.flat[rv*cols + cv] = newValue.flat[ri*newValue.cols + ci]
+                    }
+                }
+            default:
+                preconditionFailure("Invalid Extractor!")
+            }
+        }
+    }
+    
+    public subscript(_ rowRange: CountableRange<Int>, _ colRange: CountableRange<Int>) -> Matrix {
+        get {
+            let ex = (er: Extractor.CountableRange(rowRange), ec: Extractor.CountableRange(colRange))
+            return self[ex]
+        }
+        set {
+            let ex = (er: Extractor.CountableRange(rowRange), ec: Extractor.CountableRange(colRange))
+            self[ex] = newValue
+        }
+    }
+    
+    public subscript(_ e: (Extractor, Extractor)) -> Double {
+        get {
+            return Double.nan
+        }
+        set {
+            let pos = (er: e.0.convert(self.rows), ec: e.1.convert(self.cols))
+            switch pos {
+            case (.Pos(let pr), .Pos(let pc)):
+                let mat = Matrix.init(pr.count, pc.count, newValue)
+                self[pos] = mat
+            default:
+                preconditionFailure("Invalid Extractor!")
+            }
+            
+        }
+    }
+    
+    public subscript(_ rowRange: CountableRange<Int>, _ colRange: CountableRange<Int>) -> Double {
+        get {
+            return Double.nan
+        }
+        set {
+            let ex = (er: Extractor.CountableRange(rowRange), ec: Extractor.CountableRange(colRange))
+            self[ex] = newValue
+        }
     }
     
     internal func indexIsValidForRow(_ row: Int, _ col: Int) -> Bool {
@@ -745,6 +802,7 @@ public func ||| (_ lhs: Matrix, _ rhs: Matrix) -> Matrix {
 /// - All: Take all rows/columns from source matrix.
 /// - Range: Take rows/columns from source matrix with indices
 ///          starting at `from` with `stride` ending at `to`.
+/// - CountableRange: Take rows/columns inside `range`.
 /// - Pos: Take rows/columns from source matrix at specified positions
 /// - PosCyc: Take rows/columns from source matrix at specified cyclic positions
 /// - Take: Take first `n` rows/columns from source matrix
@@ -754,12 +812,61 @@ public func ||| (_ lhs: Matrix, _ rhs: Matrix) -> Matrix {
 public enum Extractor {
     case All
     case Range(Int, Int, Int)
+    case CountableRange(CountableRange<Int>)
     case Pos([Int])
     case PosCyc([Int])
     case Take(Int)
     case TakeLast(Int)
     case Drop(Int)
     case DropLast(Int)
+    
+    /// Converts any extractor into a `Extractor.Pos`. This allows for more easily manipulating a matrix.
+    ///
+    /// - Parameter colRows: number of rows or columns depending on whether this extractor is for rows or columns
+    /// - Returns: an `Extractor.Pos` extracting the same set of rows or columns as `self`.
+    public func convert(_ colRows: Int) -> Extractor {
+        switch self {
+            
+        case .All:
+            return Extractor.Pos([Int](0..<colRows)).convert(colRows)
+            
+        case .CountableRange(let range):
+            return Extractor.Range(range.startIndex, 1, range.endIndex + 1).convert(colRows)
+            
+        case .Range(let f, _, let t) where f < 0 || t >= colRows,
+             .Range(let f, _, let t) where f >= colRows || t < 0:
+            preconditionFailure("Range out of bounds")
+            
+        case .Take(let n) where n < 0 || n >= colRows,
+             .Drop(let n) where n < 0 || n >= colRows:
+            preconditionFailure("Range out of bounds")
+            
+        case .Range(let f, let b, let t):
+            return Extractor.PosCyc([Int](stride(from: f, through: t, by: b))).convert(colRows)
+            
+        case .PosCyc(let p):
+            return Extractor.Pos(p.map { $0 %% colRows }).convert(colRows)
+            
+        case .TakeLast(let n):
+            return Extractor.Drop(colRows - n).convert(colRows)
+            
+        case .DropLast(let n):
+            return Extractor.Take(colRows - n).convert(colRows)
+            
+        case .Take(let n):
+            return Extractor.Pos([Int](0..<n))
+            
+        case .Drop(let n):
+            return Extractor.Pos([Int](n..<colRows)).convert(colRows)
+            
+        case .Pos(let pr):
+            precondition(pr.count > 0 && pr.filter { $0 < 0 || $0 > colRows }.count == 0, "Range out of bounds")
+            return self
+            
+        default:
+            preconditionFailure("Invalid range")
+        }
+    }
 }
 
 /// Construct new matrix from source using specified extractor
@@ -771,65 +878,12 @@ public enum Extractor {
 ///     - e: extractor tuple for rows and columns
 /// - Returns: extracted matrix
 public func slice(_ m: Matrix, _ e: (er: Extractor, ec: Extractor)) -> Matrix {
-    switch e {
-        
-    case (.All, .All):
-        return m
-        
-    case (.Range(let f, _, let t), _) where f < 0 || t >= m.rows,
-         (_, .Range(let f, _, let t)) where f < 0 || t >= m.cols,
-         (.Range(let f, _, let t), _) where f >= m.rows || t < 0,
-         (_, .Range(let f, _, let t)) where f >= m.cols || t < 0:
-        preconditionFailure("Range out of bounds")
-        
-    case (.Take(let n), _) where n < 0 || n >= m.rows,
-         (_, .Take(let n)) where n < 0 || n >= m.cols,
-         (.Drop(let n), _) where n < 0 || n >= m.rows,
-         (_, .Drop(let n)) where n < 0 || n >= m.cols:
-        preconditionFailure("Range out of bounds")
-        
-    case (.All, _):
-        return slice(m, (.Pos([Int](0..<m.rows)), e.ec))
-    case (_, .All):
-        return slice(m, (e.er, .Pos([Int](0..<m.cols))))
-        
-    case (.Range(let f, let b, let t), _):
-        return slice(m, (.PosCyc([Int](stride(from: f, through: t, by: b))), e.ec))
-    case (_, .Range(let f, let b, let t)):
-        return slice(m, (e.er, .PosCyc([Int](stride(from: f, through: t, by: b)))))
-        
-    case (.PosCyc(let p), _):
-        return slice(m, (.Pos(p.map { $0 %% m.rows }), e.ec))
-    case (_, .PosCyc(let p)):
-        return slice(m, (e.er, .Pos(p.map { $0 %% m.cols })))
-        
-    case (.TakeLast(let n), _):
-        return slice(m, (.Drop(m.rows - n), e.ec))
-    case (_, .TakeLast(let n)):
-        return slice(m, (e.er, .Drop(m.cols - n)))
-        
-    case (.DropLast(let n), _):
-        return slice(m, (.Take(m.rows - n), e.ec))
-    case (_, .DropLast(let n)):
-        return slice(m, (e.er, .Take(m.cols - n)))
-        
-    case (.Take(let n), _):
-        return slice(m, (.Pos([Int](0..<n)), e.ec))
-    case (_, .Take(let n)):
-        return slice(m, (e.er, .Pos([Int](0..<n))))
-        
-    case (.Drop(let n), _):
-        return slice(m, (.Pos([Int](n..<m.rows)), e.ec))
-    case (_, .Drop(let n)):
-        return slice(m, (e.er, .Pos([Int](n..<m.cols))))
-        
+    let pos = (er: e.er.convert(m.rows), ec: e.ec.convert(m.cols))
+    switch pos {
     case (.Pos(let pr), .Pos(let pc)):
-        precondition(pr.count > 0 && pr.filter { $0 < 0 || $0 > m.rows }.count == 0, "Range out of bounds")
-        precondition(pc.count > 0 && pc.filter { $0 < 0 || $0 > m.cols }.count == 0, "Range out of bounds")
         return slice(m, pr, pc)
-        
     default:
-        preconditionFailure("Invalid range")
+        preconditionFailure("Invalid Extractor!")
     }
 }
 
@@ -927,7 +981,28 @@ extension Matrix: Sequence {
 
 extension Matrix: CustomStringConvertible {
     public var description: String {
-        return "\((0..<rows).map{"\(self[row: $0])"}.joined(separator: "\n"))"
+        var body = [String]()
+        for r in 0..<self.rows {
+            var row = ""
+            for c in 0..<self.cols {
+                row += String(format: "%03.2f", self[r, c]) + "\t"
+            }
+            body.append(row)
+        }
+        let colsBound = cols-1
+        var s = "*|\t" + Array(0...colsBound).map({ (i) -> String in
+            String(format: "%03.2f", Double(i))
+        }).joined(separator: "\t") + "\t| \n"
+        s += String.init(repeating: "_", count: cols*6) + "\n"
+        for (index, line) in body.enumerated() {
+            s += "\(index)⎪\t" + line + "⎪ \n"
+        }
+        s += String.init(repeating: "_", count: cols*10)
+        return s
+    }
+    
+    public var debugDescription: String {
+        return self.description
     }
 }
 

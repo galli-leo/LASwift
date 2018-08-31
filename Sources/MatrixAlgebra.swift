@@ -134,6 +134,37 @@ public func ^ (_ a: Matrix, _ p: Int) -> Matrix {
     return mpower(a, p)
 }
 
+/// Compute the determinant of a given matrix.
+///
+/// - Parameter A: matrix to compute the determinant of
+/// - Returns: determinant of the matrix or `nil` if it cannot be computed
+public func det(_ A: Matrix) -> Double? {
+    let B = Matrix(A)
+    
+    var M = __CLPK_integer(A.rows)
+    var N = __CLPK_integer(A.cols)
+    var LDA = N
+    var pivot = [__CLPK_integer](repeating: 0, count: Int(N))
+    
+    var error: __CLPK_integer = 0
+    
+    dgetrf_(&M, &N, &(B.flat), &LDA, &pivot, &error)
+    
+    if error != 0 {
+        return nil
+    }
+    
+    var det = 1 as Double
+    for (i, p) in zip(pivot.indices, pivot) {
+        if p != i + 1 {
+            det = -det * B[i, i]
+        } else {
+            det = det * B[i, i]
+        }
+    }
+    return det
+}
+
 /// Compute the inverse of a given square matrix.
 ///
 ///	A precondition error is thrown if the given matrix is singular or algorithm fails to converge.
@@ -334,4 +365,23 @@ public func tri(_ A: Matrix, _ t: Triangle) -> Matrix {
         }
     }
     return _A
+}
+
+/// Compute the rank of the matrix. The rank determines the number of independent row or column vectors.
+/// A vector `v` is independent, if it cannot be factorised into any other vector `w` of the matrix, i.e. there is no scalar `a` such that `w*a == v`.
+///
+/// - Parameters:
+///   - A: matrix to compute the rank of
+///   - tol: tolerance (best left nil)
+/// - Returns: the rank of the matrix
+public func rank(_ A: Matrix, _ tol: Double? = nil) -> Int? {
+    let (_, S, _) = svd(A)
+    var tol = tol
+    if tol == nil {
+        tol = (max(S, .Column) .* Double(max(A.cols, A.rows)) .* Double.ulpOfOne).first ?? 0.0000000001
+    }
+    
+    return S.flat.filter({ (d) -> Bool in
+        d > tol!
+    }).count
 }
